@@ -1,0 +1,154 @@
+---
+title: "Yewno-Quantitative Analyst Question 1"
+author: "Leo Guoyuan Liu"
+date: "May 21, 2018"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+
+**Question 1** Use freely available data from the web to predict/explain macroeconomic indicators.
+Financial/Economic/Fundamentals data are not allowed.
+
+
+In this exercise, I investigate the potential of using web search data to
+predict an important macroeconomic indictor--unemployment rate. It is well known
+that people's web searches behavior reveal their needs. Now days, a large proportion of
+job-related information gathering is through internet. To access the job information
+in the internet, people commonly use search engines to locate the website. It is
+easy to find the most frequent words job seekers use to search. The hypothesis is
+that the attention trend of those key words are correlated to the unemployment rate.
+
+
+
+
+
+
+
+
+```{r global_options, message=FALSE, warning=FALSE, include=FALSE}
+library(lubridate)
+library(zoo)
+library(xts)
+library(Metrics)
+library(tidyverse)
+library(MASS)
+select=dplyr::select
+filter=dplyr::filter
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE,comment=NA)
+to_xts<-function(data)  xts(data%>%select(-Date),order.by=data%>%.[["Date"]])
+to_tbl<-function(xt,...) tbl_df(data.frame(Date=index(xt),xt,
+                                          row.names=NULL,check.names = FALSE,...))
+```
+
+
+### Read data
+
+The unemployment data are downloaded from Federal Reserve Bank of St. Louis
+https://fred.stlouisfed.org/. Search engines keywords was extracted from 
+WordTracker's Top 500 keywrod, as Michael Ettrege 2005 did. I pick five words-- 
+recruitment,	resume,	employment,	monster.com,	job list. The weekly interest over times
+of these key words are collected from google trends. The interest numbers represent
+ search interest relative to the highest point on the chart for the given region and time. 
+A value of 100 is the peak popularity for the term. A value of 50 means that 
+the term is half as popular. 
+
+
+
+The information obtained from google trend will be more useful when it is available
+ahead of official report. I try variables with lead times varying from one to
+four weeks. The I aggregate the data into monthly data.  Then I add a two months
+moving average for each entry.
+
+
+
+
+```{r}
+data<-read_csv('google_trend.csv')%>%
+  mutate(Date=as.Date(Week,"%m/%d/%Y"))%>%
+  select(Date,2:6 )
+
+lead1<-data%>%mutate_at(vars(-Date),funs(lag(.,1)))
+lead2<-data%>%mutate_at(vars(-Date),funs(lag(.,2)))
+lead3<-data%>%mutate_at(vars(-Date),funs(lag(.,3)))
+lead4<-data%>%mutate_at(vars(-Date),funs(lag(.,4)))
+
+dat<-lead1%>%inner_join(lead2,by="Date", suffix=c("_ld1","_ld2"))%>%
+      inner_join(lead3, by="Date")%>%
+      inner_join(lead4, by="Date",suffix=c("_ld3","_ld4"))
+  
+  
+  
+dat<-dat%>% mutate(Date= floor_date(Date, "month"))%>%
+  group_by(Date)%>%summarise_all(mean)%>%ungroup
+sma2<-dat[-1,]%>%mutate_at(vars(-Date),funs(rollmean(.,2,align = "right",fill=NA)))
+dat<-dat%>%inner_join(sma2,by="Date",suffix=c("","_ma2"))
+
+
+  
+  
+  
+ui<-read_csv('unemployment.csv')%>%
+    mutate(Date=paste0(Year,sub("M","-", Period) ,"-01")%>%as.Date)%>%
+    select(Date,unemployment=Value)
+dat<-dat%>%inner_join(ui,by="Date" )%>%to_xts
+
+
+
+
+
+
+```
+### Model selection 
+
+I use a Sequential Backward Reduction to select the independent variables by minimizing the AIC. After
+rounds of selections. There are still many variables left. Then I manually delete
+ insignificant variables, finally I obtain a model with two variables  resume_ld3_ma2 
++ monster_ld4_ma2. 
+
+
+### Model performance
+
+It has a good r-squared 0.96. The plot shows the fitted unemployment
+runs closely with the actual one. However, when plot the out sample test. The fit
+is poor. It means even with few variables, the model is still over-fitted. To get a 
+ Better model, more advanced algorithm need to be searched. I suggest models such as ARIMAX, 
+ random forest and Neural network (RNN).
+
+
+```{r}
+stepAIC(lm(unemployment~., dat["/2017-6"]),trace=0)
+
+fit<-lm(formula = unemployment ~  resume_ld3_ma2 + monster_ld4_ma2, 
+        data = dat["/2017-6"])
+
+summary(fit)
+```
+
+
+
+
+
+```{r}
+predict(fit, dat["2017-7/"])
+
+dates=as.Date(names(fit$fitted.values),"%Y-%m-%d")
+
+y<-dat[,"unemployment"]
+y_fit=xts(fit$fitted.values, order.by=dates)
+
+y1_fit<-xts(predict(fit, dat["2017-7/"]),order.by = index(dat["2017-7/"]))
+
+plot(as.zoo(merge(y,y_fit,y1_fit)), ylab="Insample unemployment vs fited",
+    col=c("blue","red","purple"),screens=1)
+```
+
+```{r}
+print("rmse of in sample test")
+rmse(y["/2017-6"], y_fit)
+print("rmse of out sample test")
+rmse(y["2017-7/"], y1_fit)
+```
+

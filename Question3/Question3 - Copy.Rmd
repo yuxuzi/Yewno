@@ -1,0 +1,64 @@
+---
+title: "Yewno-Quantitative Analyst Question 2"
+author: "Leo Guoyuan Liu"
+date: "May 21, 2018"
+output: html_notebook
+---
+
+**Question 2** Implement one Smart Beta strategy and discuss pros and cons compared to a chosen
+benchmark.
+
+```{r}
+library(lubridate)
+library(zoo)
+library(quadprog)
+
+library(tidyverse)
+library(MASS)
+library(PerformanceAnalytics)
+library(mcrp)
+select=dplyr::select
+filter=dplyr::filter
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE,comment=NA)
+to_xts<-function(data)  xts(data%>%select(-Date),order.by=data%>%.[["Date"]])
+to_tbl<-function(xt,...) tbl_df(data.frame(Date=index(xt),xt,
+                                          row.names=NULL,check.names = FALSE,...))
+```
+Traditional maket-cap weighted portfolios have been critized 
+
+Smart beta investment strategy offer two key attributes:
+1. Alternative index weighting and
+2. Rules
+
+
+
+
+```{r}
+read_dat<-function(file,new_name, name="Price"){
+data<-read_csv(file)%>%
+   mutate(Date=as.Date(Date, format="%B %d, %Y"))%>%
+   select(Date, !!new_name:=name)%>%
+   to_xts %>% diff
+}
+       
+
+yu2<-read_dat("United States 2-Year Bond Yield Historical Data.csv","US2y")
+yg10<-read_dat("United States 10-Year Bond Yield Historical Data.csv","US10y")
+yg2<-read_dat("Germany 2-Year Bond Yield Historical Data.csv","GE2y")
+yg10<-read_dat("Germany 10-Year Bond Yield Historical Data.csv","GE10y")
+fx<-read_csv("EUR_USD Historical Data.csv")%>%
+    mutate(Date=as.Date(Date, format="%B %d, %Y"))%>%
+    mutate(FX=as.numeric(substr(`Change %`,0,nchar(`Change %`)-1)))%>%
+    select(Date, FX)%>%
+    to_xts
+ 
+dat<-merge(fx,yu6m,yu2,yu10,yg6m,yg2,yg10)
+dat<-merge(fx,yu2,yu10,yg2,yg10)
+fit<-lm(formula = FX~., data = dat)
+  
+```
+
+
+
+
+

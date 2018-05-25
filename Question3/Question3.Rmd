@@ -1,0 +1,210 @@
+---
+title: "Yewno-Quantitative Analyst Question 3"
+author: "Leo Guoyuan Liu"
+date: "May 21, 2018"
+output:
+  pdf_document: null
+  html_document: default
+  rmarkdown::html_document:
+    theme: lumen
+fig_width: 5
+fig_height: 3
+always_allow_html: yes
+---
+
+```{r global_options, message=FALSE, warning=FALSE, include=FALSE}
+
+library(zoo)
+
+library(tidyverse)
+
+library(PerformanceAnalytics)
+library(mcrp)
+select=dplyr::select
+filter=dplyr::filter
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE,comment=NA)
+to_xts<-function(data)  xts(data%>%select(-Date),order.by=data%>%.[["Date"]])
+to_tbl<-function(xt,...) tbl_df(data.frame(Date=index(xt),xt, row.names=NULL,check.names = FALSE,...))
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE,comment=NA)
+                                        
+```
+
+
+### **Question 3**
+a) Suggest one data source that might be useful to explain or predict the FX market.
+b) Derive and discuss relevant analytics from this data source.
+c) Determine whether your proposed analytics are co-integrated with currency pairs.
+d) Describe and implement a pairs trading strategy exploiting your analytics.
+
+Research shows that government bond yield data can be used to explain the FX market.[1].
+In this problem, I use U.S. and German government bonds to predict EUR/USD FX pair. 
+According to the uncovered interest rate parity under non arbitrage, the following 
+equation holds.
+$$\frac{ E(S_t)}{S_0} =\frac{1+r_l}{1+r_f}$$
+or approximately
+$$\Delta E(S_t/S_0) =\Delta r_l -\Delta r_f$$
+
+where
+$E_t(S_t)$ is the expected future spot exchange rate priced by local currency  
+ USD at  time $t$, here EUR/USD pair. 
+ $r_l\,r_f$ are the local and foreign currency interest rate.  
+ The uncovered interest rate parity may not hold for long term. In reality, the 
+ uncovered interest parity may not hold for long term. Carry trade is profit on 
+ average,  the currency with the higher interest rate tends
+to appreciate (A.P.Chabound 2003).
+
+ Since the government bonds good proxy for interest rate.  Base on Natalja Lace 2015, I choose 2 year 
+ and 10 year government debt yields from US and German specifically.
+ We can expect that the movement of $\Delta S_t$ is linear combination of bond yield.
+ $$\Delta S_t = \beta_l\Delta y_l+\beta_f \Delta y_f + c$$ 
+ 
+b). The 2-year, 10-year U.S. and Germany treasury bond yields data and EUR/USD 
+exchange rate are collected from investing.com. The period of the data is from
+Jan 1,2016 to May 24,2018.
+The plot of change of FX and the fitted change shows that the change of FX mean 
+reverts to the fitted change.
+
+
+```{r}
+read_dat<-function(file,new_name, name="Price"){
+data<-read_csv(file)%>%
+   mutate(Date=as.Date(Date, format="%B %d, %Y"))%>%
+   select(Date, !!new_name:=name)%>%
+   to_xts 
+}
+       
+
+
+
+yu2<-read_dat("United States 2-Year Bond Yield Historical Data.csv","US2y")%>% diff
+yu10<-read_dat("United States 10-Year Bond Yield Historical Data.csv","US10y")%>% diff
+yg2<-read_dat("Germany 2-Year Bond Yield Historical Data.csv","GE2y")%>% diff
+yg10<-read_dat("Germany 10-Year Bond Yield Historical Data.csv","GE10y")%>% diff
+fx0<-read_dat("EUR_USD Historical Data.csv","FX")
+fx<-read_csv("EUR_USD Historical Data.csv")%>%
+mutate(Date=as.Date(Date, format="%B %d, %Y"))%>%
+mutate(dFX=as.numeric(substr(`Change %`,0,nchar(`Change %`)-1)))%>%
+select(Date, dFX)%>%
+to_xts
+
+
+dat<-merge(fx,yu2,yu10,yg2,yg10)
+fit<-lm(formula = dFX~., data = dat)
+summary(fit)
+
+  
+```
+
+
+
+```{r}
+dates=as.Date(names(fit$fitted.values),"%Y-%m-%d")
+y=xts(fit$model$dFX, order.by=dates)
+y_fit=xts(fit$fitted.values, order.by=dates)
+plot(as.zoo(merge(y,y_fit)), ylab="change of FX vs fited FX", col=c("blue","red"),screens=1)
+```
+
+
+c) The hypothesis is that the change of EUR/USD rate might well be cointegrated within
+government bond yields, and thus lead to a potential mean-reverting systematic trading 
+strategy.
+The Augmented Dickey-Fuller Test analysis shows that the residual is stationary and 
+there is sufficient evidence to reject the null hypothesis of no
+cointegrating relationship. 
+
+
+```{r}
+library(tseries)
+adf.test(fit$residuals, k=1)
+
+```
+
+
+d) Bollinger Band is used to generate tradeable signals with mean-reverting spread
+  from combination of change of exchange rate and bond yields. 
+ $$x=\Delta S_t - \beta_l\Delta y_l-\beta_f \Delta y_f - c$$
+  
+ By definition a mean-reverting series will occasionally deviate from its mean and then eventually
+revert. Bollinger Bands provide a mechanism for entering and exiting trades by employing standard
+deviation "thresholds" at which trades can be entered into and exited from.
+To generate trades the first task is to calculate a z-score (also known as a standard score)
+of the current latest spread. To calcualte the stdv of the spread, I take a rolling window of 30.
+The z-score is calculated as follows.
+$$z=\frac{x -\bar x}{s_x}$$ 
+
+$$z<-z_{entry}\text{ : Long foreign currency}$$
+
+$$z<+z_{exit}\text{ : Short foreign currency}$$
+
+To calculate the $z$ score,we assign a rolling window of 30 days *window =30*. 
+
+Thus profitable trades are likely to occur assuming that the above conditions are regularly
+met, which a cointegrating pair with high volatility should provide.
+ $z_{entry}$ = -0.5, while $z_{exit}$ = 0.5. The
+parameters are arbitrarily picked, but a full research project would optimize these
+via some form of parameter grid-search.
+The portfolio value is given by the 
+
+
+```{r}
+dat1<-merge(fx0,dat)
+
+Run_Strategy<-function(dat1, fit){
+  n=nrow(dat)
+  window=30
+  
+  # calculate the z score
+  dat1<-dat1%>%to_tbl%>%
+    mutate(i=row_number(),z=dFX-predict(fit,slice(.,i)))%>%
+    mutate(s=rollapply(z,width=window,FUN=sd,align = "right", fill = NA, na.rm = T))%>%
+    mutate(m=rollapply(z,width=window,FUN=mean,align = "right", fill = NA, na.rm = T))%>%
+    mutate(z=(z-m/s),eur=0,usd=1,value=1)%>%select(Date, FX,z,eur,usd,value)%>% na.omit
+  
+  #implement the strategy
+  for(i in 2:nrow(dat1)){
+      # buy euro if z<-0.5
+    if( dat1[i-1,]$usd>0 && dat1[i,]$z< -0.5){
+        dat1[i,]$eur=dat1[i-1,]$usd/dat1[i,]$FX
+        dat1[i,]$usd=0
+        dat1[i,]$value=dat1[i-1,]$usd
+        # sell euro if z>0.5
+      } else if(dat1[i-1,]$eur>0 && dat1[i,]$z>0.5){
+        dat1[i,]$usd=dat1[i-1,]$eur*dat1[i,]$FX
+        dat1[i,]$eur=0
+        dat1[i,]$value=dat1[i,]$usd
+      }else{
+        dat1[i,]$usd=dat1[i-1,]$usd
+        dat1[i,]$eur=dat1[i-1,]$eur
+        dat1[i,]$value=dat1[i,]$usd+dat1[i,]$eur*dat1[i,]$FX
+    }
+  }
+  
+  dat1<-dat1%>%mutate(Return=value/lag(value)-1)
+  dat1%>%to_xts
+  
+}
+
+result<-Run_Strategy(dat1,fit)
+library(PerformanceAnalytics)
+performance<-function(r){
+  c(
+  Return=Return.cumulative(r),
+  Sharpe=SharpeRatio(r,FUN="StdDev"),
+  VaR=VaR(r,method="historical")
+)
+}
+performance(result$Return)
+
+```
+**References**
+
+Alain P. Chaboud and Jonathan H. Wright
+*Uncovered Interest Parity: It Works, But Not For Long*. 
+International Finance Discussion Papers
+ January 2003
+
+Natalja Lace, IrenaMacerinskiene and Andrius Balciunas
+*Determining the EUR/USD exchange rate with U.S. 
+and German government bond yields in the post-crisis period*
+Intellectual Economics
+Volume 9, Issue 2, August 2015, Pages 150-155

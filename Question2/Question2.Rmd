@@ -1,0 +1,311 @@
+---
+title: "Yewno-Quantitative Analyst Question 2"
+author: "Leo Guoyuan Liu"
+date: "May 21, 2018"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+**Question 2** Implement one Smart Beta strategy and discuss pros and cons compared to a chosen
+benchmark.
+
+
+```{r global_options, message=FALSE, warning=FALSE, include=FALSE}
+
+library(zoo)
+
+library(tidyverse)
+library(mcrp)
+library(PerformanceAnalytics)
+library(quantmod)
+require("NMOF")
+library(xts)
+select=dplyr::select
+filter=dplyr::filter
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE,comment=NA)
+to_xts<-function(data)  xts(data%>%select(-Date),order.by=data%>%.[["Date"]])
+to_tbl<-function(xt,...) tbl_df(data.frame(Date=index(xt),xt,                                       row.names=NULL,check.names = FALSE,...))
+
+
+```
+Traditional market-cap weighted portfolios have been criticized that they are
+poorly diversified. The risk-based smart beta approach corresponds to the criticism,
+and adopts risk-based weighing in portfolio construction, thus manages the risk
+more effectively and achieve a better performance. The well-known risk-based approaches
+are MV (minimum variance), equally-weighted, and ERC (equally-weighted risk contributions)
+ In this exercise, I implement the ERC  smart beta strategy in R and compare its performance
+to other two as benchmarks.
+
+#### Definition of ERC problem
+Given a portfolio $x=(x_1,x_2,...,x_n)$ of n risky assets, $x_i$ is the weight of assets
+$i$. The corresponding return is $r=(r_1,r_2,...,r_n)$. The goal of the ERC strategy is
+to find a risk-balanced portfolio such that the risk contribution is the same for all
+assets without short selling.
+
+Let $\Sigma=[\sigma_{ij}]$ be the covariance matrix of the return. The portfolio
+risk is given by $x^T \Sigma x$. The contribution of $i^th$ asset to the portfolio
+risk can be calculated by the weight $x_i$ multiply marginal risk contribution.
+$$x_i\times \partial_{x_i} (x^T\Sigma x)=x_i (\Sigma x)_i $$
+
+The problem can be rewritten as finding $\hat{x}$ such that
+
+$$\hat{x}=\{ x\in [0,1]^n:1^T x=1,x_i(\Sigma x)_i= x_j(\Sigma x)_j, \\
+\text{ for all } i,j\} $$
+
+We can use SQP ( Sequential Quadratic programming) to solve it
+
+$$\begin{equation}
+\begin{split}
+\text{minimize } \,\displaystyle f(x)=\sum_{i,j}(x_i(\Sigma x)_i - x_j(\Sigma x)_j )^2\\
+\text{subject to: } \displaystyle 1^Tx=1 \,, 0\le x\le1
+\end{split}
+\end{equation}$$
+
+
+The function that calculates the optimized weights is *erc*.
+
+#### Comparison with 1/n and minimum-variance portfolios
+Equally weighted portfolio(1/n) and minimum-variance (MV) portfolios are widely
+used in practice. ERC portfolios are naturally located between both and thus appear
+as good potential substitutes for these traditional approaches
+Literature shown that
+
+*  The volatilities of these three portfolios as follows, with
+the ERC located between. 
+
+$$V_{mv}\le V_{erc}\le V_{1/n}$$ 
+
+* ERC portfolio is optimal if we assume a constant correlation
+matrix and supposing that the assets have all the same Sharpe ratio.
+
+
+
+```{r}
+# calulate the center quardratic moment
+M2<-function (r) 
+{
+    L <- nrow(r)
+    rc <- apply(r, 2, scale, scale = FALSE)
+    ans <- 1/(L - 1) * crossprod(rc)
+    ans
+}
+# Portfoio performance
+performance<-function(r){
+  c(
+  Return=Return.cumulative(r),
+  Sharpe=SharpeRatio(r,FUN="StdDev"),
+  VaR=VaR(r,method="historical")
+)
+}
+
+## Function calculates ERC distrituion
+## with respect to higher moments
+##
+#'
+#' @param start \code{numeric}, a \eqn{(N x 1)} vector of starting values.
+#' @param returns \code{matrix}, a \eqn{(T x N)} matrix of asset returns.
+#' @param sigma \code{numeric}, a \eqn{(N x N)} Covariance matrix'
+#'
+#' @return  code{numeric}, a \eqn{(N x 1)} vector of weights
+#'
+erc<- function(returns=NULL,sigma=NULL){
+  #covariance matrix
+  if(is.null(sigma))
+    sigma<-M2(returns)
+  #objective function
+  f<-function(x){
+    pctb<- x * sigma %*% x / c(crossprod(x, sigma) %*% x)
+    var(pctb)
+  }
+  
+  #optimization
+  m<-ncol(sigma)
+  opt <-nlminb(start = runif(m), objective = f, lower = rep(0, m))
+  #output weight
+  w <- opt$par / sum(opt$par)
+}
+
+#calculate risk contribution
+risk_contribution<-function(r,w){
+  dm2<- (M2(r) %*% w)
+  mp2<-c(crossprod(w, M2(r)) %*% w)
+  w*dm2/mp2
+}
+
+
+
+mv<-function(returns=NULL,sigma=NULL){
+  if(is.null(sigma))
+    sigma<-M2(returns)
+  require("NMOF")
+  res<-minvar(sigma)
+  as.vector(res)
+  
+}
+
+#calculate risk contribution
+risk_contribution<-function(r,w){
+  dm2<- (M2(r) %*% w)
+  mp2<-c(crossprod(w, M2(r)) %*% w)
+  w*dm2/mp2
+}
+
+
+get_return<-function(x) x/lag.xts(x)-1
+
+```
+
+
+
+
+#### A Numerical example 
+A numerical example is illustrated as follows. The portfolio has four assets 
+with constant volatility $(0.1,0.2,0.3,0.4)$ and correlation matrix rho. Then
+1/n portfolio give equal contribution of $(0.25,0.25,0.25,0.25)$, while the 
+mv portfolio is concentrated in the first portfolio. The ERC portfolio is
+invested in all assets. Therefore ERC portfolio is more balanced in terms of risk 
+contribution. The variance of the ERC portfolio is also between the other two.
+
+
+```{r }
+rho<-matrix(
+  c(1,0.8,0,0, 0.8,1,0,0,0,0,1,-0.5,0,0,-0.5,1),
+  c(4,4)
+)
+s<-c(0.1,0.2,0.3,0.4)
+d<-diag(s)
+print("The correlation matrix portfolio")
+print(rho)
+print("The stdv of the portfolio")
+print(s)
+Sigma<-d%*%rho%*%d
+Vr<-function(w,sigma=Sigma){
+ as.numeric( t(w)%*%sigma%*%w)
+}
+print("The solution for the 1/n portfolio")
+w=rep(1/4,4)
+print(w )
+print("The variance")
+
+print(Vr(w))
+print("The solution for the MV portfolio")
+
+w=mv(sigma=Sigma)
+print(w)
+print("The variance")
+print(Vr(w))
+
+print("The solution for the ERC portfolio")
+w=erc(sigma=Sigma)
+print(w )
+print("The variance")
+
+print(Vr(w))
+
+```
+
+
+
+#### Implement the ERC strategy.
+I write an Run_Strategy function to implement the three strategies. The idea
+behind the strategy is that we rebalance the portfolio every 30 days based on
+the weights calculated by the strategy. We using the rolling window of 360
+days to calculate the variance matrix.
+The performance function measure the performance of the strategies, including
+the cumulative return, the Sharpe ratio and the VaR. The performance of the 
+all three metrics are between 1/n and MV.
+
+
+```{r}
+data <- new.env()
+getSymbols(c('AAPL','WMT','GE','IBM'), src = 'yahoo',from = "2000-01-01", adjust =  TRUE,env=data )
+x<-merge(data$AAPL[,6], data$WMT[,6], data$GE[,6],data$IBM[,6])
+
+## Function runs the rebalance strategy E
+## with respect to higher moments
+##
+#'
+#' @param x market price data.
+#' @param stragegy name of the strategy namely 1/n, mv, and erc#'
+#'
+#' @return  return of the portfolio
+#'
+Run_Strategy<-function(x,strategy){
+  n=nrow(x)
+  m =ncol(x)
+  r=get_return(x)
+  
+  
+  
+  res<-xts(data.frame(Value=rep(1,n)),order.by=index(x))
+  #starting from equal weights
+  shares=rep(1/m, m)/as.numeric(x[360])
+
+  for(i in 361:n){
+     res[i]$Value=sum(x[i]*shares)
+     # re-balance the portfolio every 30 days
+    if((i-361)%%30==0){
+      # switch strategy
+      sigma=M2(r[(i-360+1):i])
+      if(strategy=="1/n"){
+        w=rep(1/m,m)
+      }else if(strategy=="mv"){
+        w=mv(sigma=sigma)
+      }else if(strategy=="erc"){
+         w=erc(sigma=sigma)
+      }else{
+        stop("not implented")
+      }
+     
+      shares=as.numeric(res[i]$Value*w)/as.numeric(x[i])
+    }
+   
+  }
+  # get return
+  get_return(res)["2002/"]
+}
+
+
+
+r1<-Run_Strategy(x,"1/n")
+r2<-Run_Strategy(x,"mv")
+r3<-Run_Strategy(x,"erc")
+
+
+performance(r1)
+performance(r2)
+performance(r3)
+```
+
+
+
+
+#### Conclusion
+Minimum variance (MV) and equality-weighted (1/n) portfolio are popular risk-based smart beta
+strategy. They both have limitations. 1/n lacks risk monitoring while mv suffers dramatic
+asset concentration. The ERC strategy offer a middle ground between both the distribution
+and the risk. From the implementation of the simple rebalance strategy, the performance
+of the ERC is also between the other two, thus give a meaningful option for portfolio construciton.
+
+**Reference**
+On the properties of equally-weighted
+risk contributions portfolios
+Sébastien Maillard, Thierry Roncalli and Jérôme Teiletche
+May 2009 https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1271972
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
